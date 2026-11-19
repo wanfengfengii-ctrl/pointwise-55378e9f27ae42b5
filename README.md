@@ -55,7 +55,9 @@ with Warehouse('rivercape.sqlite') as db:
 - `ingest_batch(batch_id, station, unit, rows)` 按原序接纳一组 `ObservationInput`，回执含 `cutoff` 和原观测。批号全库唯一。站点、单位、原序小时和读数共同确定是否是原批重投。批次即使没有观测也可领取回执。`get_batch` 查询原批，`latest_cutoff` 查询全库最新接纳序号。截点 0 表示空采样输入。
 - `publish_schedule(publication_id, station, intervals)` 接收一组 `ThresholdInterval`，返回 `revision` 与 `current_head`。发布号全库唯一。起点含、终点不含，区间可以相邻，空区间和交叠拒绝，空列表发布全站无规则版。规则出处保留输入原位。旧版原内容重投领取原修订，`current_head` 仍是当下生效的版。`get_head(station)` 返回当前发布号或 `None`，`get_revision(station, revision)` 返回指定历史修订，`threshold_at(station, revision, hour)` 返回命中规则或 `None`。
 - `issue_rows(page_id, station, cutoff, revision, start, end)` 用固定截点及指定本地修订签页。记录以整数小时、接纳序号、批内原位排序。巡核页只保存实际观测行及该行使用的阈值和出处。`get_review(page_id)` 领取原页。`list_observations(station, cutoff, start, end)` 按同一采样选择口径查原观测。
-- `close_day(close_id, page_id)` 仅接受对齐的整日窗 `[24×日序,24×(日序+1))`。它核对固定页的来源和日窗，汇总 `normal`、`exceeded`、`unruled`、`missing`。`get_day(close_id)` 领取日结及所引页号。完整空日页可签零计数日结。
+- `issue_review(page_id, station, revision, start, end)` 签发整窗凭据页：首次成功时固定当时的 `latest_cutoff()` 与指定修订，返回与 `issue_rows` 同形的 `binding`、`rows`，并附 `coverage` —— 按起点升序、首尾相接覆盖整窗的 `(start, end, threshold, source)` 元组，无采样或无规则的时段以 `(None, None)` 显式空档列出。同一页号以相同站点、修订和窗重投返回首发结果及原截点；异参数或跨签发入口占号抛 `ValueError`。`revision` 可指定历史修订。旧接口签发的页没有 `coverage`，不能作为更正凭据。
+- `amend_review(request_id, page_id, edits)` 凭整窗凭据页提交有序 `(start, end, threshold)` 编辑，阈值为非负整数或 `None`（清除）。编辑须在页窗内、宽度为正、互不重叠。提交时按页站点的同一现行修订核对每个待改小时的实际阈值与出处（发布号与发布内位置；两个无规则状态相同），有差异抛 `ValueError` 并在 `conflict_hour` 给出最早冲突小时。成功返回 `PublicationReceipt`，`revision` 为整条有效修订，`current_head` 为本次发布号：未编辑段沿用原出处，设置段以本次发布号及零起算输入位置为出处，清除段读作无规则。同号、同页、同有序编辑重投返回首次回执；异申请与提及已占发布号抛 `ValueError`。`request_id` 与 `publish_schedule` 共用全库发布号空间。
+- `close_day(close_id, page_id)` 仅接受对齐的整日窗 `[24×日序,24×(日序+1))`。它核对固定页的来源和日窗，汇总 `normal`、`exceeded`、`unruled`、`missing`。`get_day(close_id)` 领取日结及所引页号。完整空日页可签零计数日结。凭据页同样可结账，结账按页绑定的修订与固定行，不受作答后目录前进影响。
 
 ## 口径和失败边界
 
@@ -64,3 +66,5 @@ with Warehouse('rivercape.sqlite') as db:
 输入非法、同号异内容以及引用异站修订时抛出 `ValueError`。未知站、批、修订、页或日结抛出 `KeyError`。批头及原位、目录修订及头、巡核页头及明细分别原子提交，日结号及计数同次提交。提交前故障回滚本次写入，已签历史仍可读，失败标识可重试。需要同时打开同一库时，各值班进程应使用自己的 `Warehouse` 连接。
 
 原回归覆盖样例重复初始化、单位和闭量程准入、重投和重复出现、相邻阈值的原位、换版回滚、固定截点、半开规则边界和日界、异站修订、整版换发后重开及日结故障重试。
+
+凭页更正约定：`issue_review` 在首次成功签发时固定 `latest_cutoff()`、指定修订和整窗 `coverage`（含无采样时段与显式无规则空档）。`amend_review` 的「现行修订」取提交前该站点的 `get_head`，逐小时比较阈值、发布号与发布内位置；两个无规则状态视为相同，日间后来出现的观测不参与比较。成功提交把整条有效修订、现行头和回执放在同一次 SQLite 写入，失败回滚且不占号；未编辑段保留实际原出处，设置段以 `request_id` 为发布号、零起算输入位置为位置。已签页、历史修订、日结和更正回执按原号可领取，后续 `publish_schedule` 或重开都不改动它们。

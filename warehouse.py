@@ -13,7 +13,9 @@ from observations.records import ObservationInput as ObservationInput
 from observations.selection import select_observations
 from review.archive import ReviewArchive, get_review
 from review.issue import issue_rows
+from review.issue_review import issue_review
 from review.receipt import validate_review_window
+from rules.amendment import AmendmentArchive, amend_review
 from rules.catalog import ScheduleCatalog
 from rules.intervals import ThresholdInterval as ThresholdInterval
 from rules.lookup import get_station_revision, lookup_threshold
@@ -66,6 +68,7 @@ class Warehouse:
                 self._stations.initialize()
                 self._batches.initialize()
                 self._catalog.initialize()
+                AmendmentArchive(connection).initialize()
                 ReviewArchive(connection).initialize()
                 DayArchive(connection).initialize()
         except BaseException:
@@ -125,6 +128,12 @@ class Warehouse:
 
     def issue_rows(self, page_id, station, cutoff, revision, start, end):
         return issue_rows(self._store, page_id, station, cutoff, revision, start, end)
+
+    def issue_review(self, page_id, station, revision, start, end):
+        return issue_review(self._store, page_id, station, revision, start, end)
+
+    def amend_review(self, request_id, page_id, edits):
+        return amend_review(self._store, request_id, page_id, edits)
 
     def get_review(self, page_id):
         return get_review(self._store, page_id)

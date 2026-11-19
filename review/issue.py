@@ -30,6 +30,8 @@ def issue_rows(store: Store, page_id: str, station: str, cutoff: int,
     with store.write():
         original = archive.find_page(page_id)
         if original is not None:
+            if original.credential:
+                raise ValueError(f'review {page_id!r} was signed as a credential')
             require_same_binding(original, binding)
             return original
         schedule = get_station_revision(ScheduleCatalog(store.connection), station, revision)

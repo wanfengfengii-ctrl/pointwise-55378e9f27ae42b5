@@ -10,7 +10,7 @@ from rules.revisions import RuleSource
 
 from .classify import Classification
 from .evidence import ReviewRow
-from .receipt import ReviewBinding, ReviewPage
+from .receipt import CoverageSegment, ReviewBinding, ReviewPage
 
 if TYPE_CHECKING:
     from warehouse import Store
@@ -56,6 +56,21 @@ class ReviewArchive:
                     OR (threshold IS NOT NULL AND rule_publication IS NOT NULL AND rule_position IS NOT NULL))
             )
         ''')
+        self._connection.execute('''
+            CREATE TABLE IF NOT EXISTS review_coverage (
+                page_id TEXT NOT NULL REFERENCES review_pages (page_id),
+                ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+                start_hour TEXT NOT NULL,
+                end_hour TEXT NOT NULL,
+                threshold TEXT,
+                source_publication TEXT,
+                source_position INTEGER,
+                PRIMARY KEY (page_id, ordinal),
+                CHECK ((threshold IS NULL AND source_publication IS NULL AND source_position IS NULL)
+                    OR (threshold IS NOT NULL AND source_publication IS NOT NULL
+                        AND source_position IS NOT NULL))
+            )
+        ''')
 
     @staticmethod
     def _decode_row(row: sqlite3.Row) -> ReviewRow:
@@ -81,7 +96,25 @@ class ReviewArchive:
                    threshold, rule_publication, rule_position
             FROM review_rows WHERE page_id = ? ORDER BY ordinal
         ''', (page_id,))
-        return ReviewPage(page_id, binding, tuple(self._decode_row(row) for row in rows))
+        coverage = self._find_coverage(page_id)
+        return ReviewPage(page_id, binding, tuple(self._decode_row(row) for row in rows), coverage)
+
+    def _find_coverage(self, page_id: str) -> tuple[CoverageSegment, ...] | None:
+        rows = self._connection.execute('''
+            SELECT start_hour, end_hour, threshold, source_publication, source_position
+            FROM review_coverage WHERE page_id = ? ORDER BY ordinal
+        ''', (page_id,)).fetchall()
+        if not rows:
+            return None
+        return tuple(
+            CoverageSegment(
+                int(row['start_hour'], 16), int(row['end_hour'], 16),
+                None if row['threshold'] is None else int(row['threshold'], 16),
+                None if row['source_publication'] is None
+                else RuleSource(row['source_publication'], row['source_position']),
+            )
+            for row in rows
+        )
 
     @staticmethod
     def _encode_row(page_id: str, ordinal: int, row: ReviewRow) -> tuple:
@@ -107,6 +140,21 @@ class ReviewArchive:
                                      hour, reading, classification, threshold, rule_publication, rule_position)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (self._encode_row(page.page_id, ordinal, row) for ordinal, row in enumerate(page.rows)))
+        if page.coverage is not None:
+            self._store_coverage(page.page_id, page.coverage)
+
+    def _store_coverage(self, page_id: str, coverage: tuple[CoverageSegment, ...]) -> None:
+        self._connection.executemany('''
+            INSERT INTO review_coverage (page_id, ordinal, start_hour, end_hour, threshold,
+                                         source_publication, source_position)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            (page_id, ordinal, hex(segment.start), hex(segment.end),
+             None if segment.threshold is None else hex(segment.threshold),
+             None if segment.source is None else segment.source.publication_id,
+             None if segment.source is None else segment.source.position)
+            for ordinal, segment in enumerate(coverage)
+        ))
 
 
 def get_review(store: Store, page_id: str) -> ReviewPage:
